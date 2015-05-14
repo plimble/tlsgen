@@ -42,7 +42,10 @@ func main() {
 			logrus.Fatal("host shoule not be empty")
 		}
 		GenerateCACertificate("ca.pem", "ca-key.pem", org, 2048)
-		GenerateCert(host, "cert.pem", "key.pem", "ca.pem", "ca-key.pem", org, 2048)
+		//client
+		GenerateCert([]string{""}, "cert.pem", "key.pem", "ca.pem", "ca-key.pem", org, 2048)
+		//server
+		GenerateCert(host, "server.pem", "server-key.pem", "ca.pem", "ca-key.pem", org, 2048)
 	}
 
 	app.Run(os.Args)
