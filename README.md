@@ -1,7 +1,7 @@
-Tlsgen
+tlsgen
 ===========
 
-###Usaged
+###Command
 
 ```
 NAME:
