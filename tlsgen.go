@@ -27,6 +27,11 @@ func main() {
 			Value: "",
 			Usage: "Organization name",
 		},
+		cli.IntFlag{
+			Name:  "days",
+			Value: 365,
+			Usage: "Expired in day",
+		},
 		cli.StringSliceFlag{
 			Name:  "host",
 			Value: &cli.StringSlice{},
@@ -38,12 +43,16 @@ func main() {
 		if org == "" {
 			logrus.Fatal("org shoule not be empty")
 		}
+		days := c.Int("days")
+		if days == 0 {
+			logrus.Fatal("days must not be 0")
+		}
 		host := c.StringSlice("host")
 		if len(host) == 0 {
 			logrus.Fatal("host shoule not be empty")
 		}
-		GenerateCACertificate("ca.pem", "ca.key", org, 2048)
-		GenerateCert(host, "server.pem", "server.key", "ca.pem", "ca.key", org, 2048)
+		GenerateCACertificate("ca.pem", "ca.key", org, days, 2048)
+		GenerateCert(host, "server.pem", "server.key", "ca.pem", "ca.key", org, days, 2048)
 	}
 
 	app.Run(os.Args)
@@ -69,12 +78,12 @@ func getTLSConfig(caCert, cert, key []byte, allowInsecure bool) (*tls.Config, er
 	return &tlsConfig, nil
 }
 
-func newCertificate(org string) (*x509.Certificate, error) {
+func newCertificate(org string, days int) (*x509.Certificate, error) {
 	now := time.Now()
 	// need to set notBefore slightly in the past to account for time
 	// skew in the VMs otherwise the certs sometimes are not yet valid
 	notBefore := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute()-5, 0, 0, time.Local)
-	notAfter := notBefore.Add(time.Hour * 24 * 1080)
+	notAfter := notBefore.Add(time.Hour * 24 * time.Duration(days))
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
@@ -99,8 +108,8 @@ func newCertificate(org string) (*x509.Certificate, error) {
 // GenerateCACertificate generates a new certificate authority from the specified org
 // and bit size and stores the resulting certificate and key file
 // in the arguments.
-func GenerateCACertificate(certFile, keyFile, org string, bits int) error {
-	template, err := newCertificate(org)
+func GenerateCACertificate(certFile, keyFile, org string, days, bits int) error {
+	template, err := newCertificate(org, days)
 	if err != nil {
 		return err
 	}
@@ -142,8 +151,8 @@ func GenerateCACertificate(certFile, keyFile, org string, bits int) error {
 // certificate authority files and stores the result in the certificate
 // file and key provided.  The provided host names are set to the
 // appropriate certificate fields.
-func GenerateCert(hosts []string, certFile, keyFile, caFile, caKeyFile, org string, bits int) error {
-	template, err := newCertificate(org)
+func GenerateCert(hosts []string, certFile, keyFile, caFile, caKeyFile, org string, days, bits int) error {
+	template, err := newCertificate(org, days)
 	if err != nil {
 		return err
 	}
