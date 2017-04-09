@@ -7,13 +7,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"github.com/Sirupsen/logrus"
-	"github.com/codegangsta/cli"
 	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
 	"time"
+
+	"github.com/Sirupsen/logrus"
+	"github.com/codegangsta/cli"
 )
 
 func main() {
@@ -41,11 +42,8 @@ func main() {
 		if len(host) == 0 {
 			logrus.Fatal("host shoule not be empty")
 		}
-		GenerateCACertificate("ca.pem", "ca-key.pem", org, 2048)
-		//client
-		GenerateCert(host, "cert.pem", "key.pem", "ca.pem", "ca-key.pem", org, 2048)
-		//server
-		GenerateCert(host, "server.pem", "server-key.pem", "ca.pem", "ca-key.pem", org, 2048)
+		GenerateCACertificate("ca.pem", "ca.key", org, 2048)
+		GenerateCert(host, "server.pem", "server.key", "ca.pem", "ca.key", org, 2048)
 	}
 
 	app.Run(os.Args)
