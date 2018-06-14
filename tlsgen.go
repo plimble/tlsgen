@@ -1,139 +1,153 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"flag"
+	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"time"
-
-	"github.com/Sirupsen/logrus"
-	"github.com/codegangsta/cli"
 )
 
-func main() {
-	app := cli.NewApp()
-	app.Name = "tlsgen"
-	app.Usage = "Generates web server TLS certificates"
-	app.Flags = []cli.Flag{
-		cli.StringFlag{
-			Name:  "org",
-			Value: "",
-			Usage: "Organization name",
-		},
-		cli.IntFlag{
-			Name:  "days",
-			Value: 365,
-			Usage: "Expired in day",
-		},
-		cli.StringSliceFlag{
-			Name:  "host",
-			Value: &cli.StringSlice{},
-			Usage: "Server Host",
-		},
-	}
-	app.Action = func(c *cli.Context) {
-		org := c.String("org")
-		if org == "" {
-			logrus.Fatal("org shoule not be empty")
-		}
-		days := c.Int("days")
-		if days == 0 {
-			logrus.Fatal("days must not be 0")
-		}
-		hosts := c.StringSlice("host")
-		if len(hosts) == 0 {
-			logrus.Fatal("host shoule not be empty")
-		}
-		GenerateCACertificate("ca.crt", "ca.key", hosts, org, days, 2048)
-	}
+var (
+	org        = flag.String("org", "Acme Co", "organization")
+	host       = flag.String("host", "0.0.0.0", "Comma-separated hostnames and IPs to generate a certificate for")
+	validFrom  = flag.String("start-date", "", "Creation date formatted as Jan 1 15:04:05 2011")
+	validFor   = flag.Duration("duration", 365*24*time.Hour, "Duration that certificate is valid for")
+	isCA       = flag.Bool("ca", true, "whether this cert should be its own Certificate Authority")
+	rsaBits    = flag.Int("rsa-bits", 2048, "Size of RSA key to generate. Ignored if --ecdsa-curve is set")
+	ecdsaCurve = flag.String("ecdsa-curve", "", "ECDSA curve to use to generate a key. Valid values are P224, P256 (recommended), P384, P521")
+)
 
-	app.Run(os.Args)
+func publicKey(priv interface{}) interface{} {
+	switch k := priv.(type) {
+	case *rsa.PrivateKey:
+		return &k.PublicKey
+	case *ecdsa.PrivateKey:
+		return &k.PublicKey
+	default:
+		return nil
+	}
 }
 
-func newCertificate(org string, days int) (*x509.Certificate, error) {
-	now := time.Now()
-	// need to set notBefore slightly in the past to account for time
-	// skew in the VMs otherwise the certs sometimes are not yet valid
-	notBefore := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute()-5, 0, 0, time.Local)
-	notAfter := notBefore.Add(time.Hour * 24 * time.Duration(days))
+func pemBlockForKey(priv interface{}) *pem.Block {
+	switch k := priv.(type) {
+	case *rsa.PrivateKey:
+		return &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}
+	case *ecdsa.PrivateKey:
+		b, err := x509.MarshalECPrivateKey(k)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Unable to marshal ECDSA private key: %v", err)
+			os.Exit(2)
+		}
+		return &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}
+	default:
+		return nil
+	}
+}
+
+func main() {
+	flag.Parse()
+
+	if len(*host) == 0 {
+		log.Fatalf("Missing required --host parameter")
+	}
+
+	var priv interface{}
+	var err error
+	switch *ecdsaCurve {
+	case "":
+		priv, err = rsa.GenerateKey(rand.Reader, *rsaBits)
+	case "P224":
+		priv, err = ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	case "P256":
+		priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	case "P384":
+		priv, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	case "P521":
+		priv, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	default:
+		fmt.Fprintf(os.Stderr, "Unrecognized elliptic curve: %q", *ecdsaCurve)
+		os.Exit(1)
+	}
+	if err != nil {
+		log.Fatalf("failed to generate private key: %s", err)
+	}
+
+	var notBefore time.Time
+	if len(*validFrom) == 0 {
+		notBefore = time.Now()
+	} else {
+		notBefore, err = time.Parse("Jan 2 15:04:05 2006", *validFrom)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to parse creation date: %s\n", err)
+			os.Exit(1)
+		}
+	}
+
+	notAfter := notBefore.Add(*validFor)
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
-		return nil, err
+		log.Fatalf("failed to generate serial number: %s", err)
 	}
 
-	return &x509.Certificate{
+	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{org},
+			Organization: []string{*org},
 		},
 		NotBefore: notBefore,
 		NotAfter:  notAfter,
 
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-	}, nil
-
-}
-
-// GenerateCACertificate generates a new certificate authority from the specified org
-// and bit size and stores the resulting certificate and key file
-// in the arguments.
-func GenerateCACertificate(certFile, keyFile string, hosts []string, org string, days, bits int) error {
-	template, err := newCertificate(org, days)
-	if err != nil {
-		return err
 	}
 
-	template.IsCA = true
-	template.KeyUsage |= x509.KeyUsageCertSign
-	if len(hosts) == 1 && hosts[0] == "" {
-		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
-		template.KeyUsage = x509.KeyUsageDigitalSignature
-	} else { // server
-		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
-		for _, h := range hosts {
-			if ip := net.ParseIP(h); ip != nil {
-				template.IPAddresses = append(template.IPAddresses, ip)
-
-			} else {
-				template.DNSNames = append(template.DNSNames, h)
-			}
+	hosts := strings.Split(*host, ",")
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+		} else {
+			template.DNSNames = append(template.DNSNames, h)
 		}
 	}
 
-	priv, err := rsa.GenerateKey(rand.Reader, bits)
-	if err != nil {
-		return err
+	if *isCA {
+		template.IsCA = true
+		template.KeyUsage |= x509.KeyUsageCertSign
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, publicKey(priv), priv)
 	if err != nil {
-		return err
+		log.Fatalf("Failed to create certificate: %s", err)
 	}
 
-	certOut, err := os.Create(certFile)
+	certOut, err := os.Create("cert.pem")
 	if err != nil {
-		return err
+		log.Fatalf("failed to open cert.pem for writing: %s", err)
 	}
-
 	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	certOut.Close()
+	log.Print("written cert.pem\n")
 
-	keyOut, err := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	keyOut, err := os.OpenFile("key.pem", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		return err
-
+		log.Print("failed to open key.pem for writing:", err)
+		return
 	}
-
-	pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+	pem.Encode(keyOut, pemBlockForKey(priv))
 	keyOut.Close()
-
-	return nil
+	log.Print("written key.pem\n")
 }
