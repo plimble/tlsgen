@@ -23,7 +23,6 @@ var (
 	host       = flag.String("host", "0.0.0.0", "Comma-separated hostnames and IPs to generate a certificate for")
 	validFrom  = flag.String("start-date", "", "Creation date formatted as Jan 1 15:04:05 2011")
 	validFor   = flag.Duration("duration", 365*24*time.Hour, "Duration that certificate is valid for")
-	isCA       = flag.Bool("ca", false, "whether this cert should be its own Certificate Authority")
 	rsaBits    = flag.Int("rsa-bits", 2048, "Size of RSA key to generate. Ignored if --ecdsa-curve is set")
 	ecdsaCurve = flag.String("ecdsa-curve", "", "ECDSA curve to use to generate a key. Valid values are P224, P256 (recommended), P384, P521")
 )
@@ -124,10 +123,8 @@ func main() {
 		}
 	}
 
-	if *isCA {
-		template.IsCA = true
-		template.KeyUsage |= x509.KeyUsageCertSign
-	}
+	template.IsCA = true
+	template.KeyUsage |= x509.KeyUsageCertSign
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, publicKey(priv), priv)
 	if err != nil {
